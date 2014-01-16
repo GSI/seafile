@@ -1268,7 +1268,7 @@ error:
 
 int
 seaf_repo_merge (SeafRepo *repo, const char *branch, char **error,
-                 gboolean *real_merge)
+                 gboolean *real_merge, gboolean calculate_ca)
 {
     SeafBranch *remote_branch;
     int ret = 0;
@@ -1290,7 +1290,7 @@ seaf_repo_merge (SeafRepo *repo, const char *branch, char **error,
         goto error;
     }
 
-    ret = merge_branches (repo, remote_branch, error, real_merge);
+    ret = merge_branches (repo, remote_branch, error, real_merge, calculate_ca);
     seaf_branch_unref (remote_branch);
 
     return ret;
@@ -2427,6 +2427,74 @@ seaf_repo_manager_get_merge_info (SeafRepoManager *manager,
     pthread_mutex_unlock (&manager->priv->db_lock);
 
     return 0;
+}
+
+typedef struct {
+    char common_ancestor[41];
+    char head_id[41];
+} CAInfo;
+
+static gboolean
+get_common_ancestor (sqlite3_stmt *stmt, void *vinfo)
+{
+    CAInfo *info = vinfo;
+
+    const char *ancestor = (const char *) sqlite3_column_text (stmt, 0);
+    const char *head_id = (const char *) sqlite3_column_text (stmt, 1);
+
+    memcpy (info->common_ancestor, ancestor, 40);
+    memcpy (info->head_id, head_id, 40);
+
+    return FALSE;
+}
+
+int
+seaf_repo_manager_get_common_ancestor (SeafRepoManager *manager,
+                                       const char *repo_id,
+                                       char *common_ancestor,
+                                       char *head_id)
+{
+    char sql[256];
+    CAInfo info;
+
+    memset (&info, 0, sizeof(info));
+
+    pthread_mutex_lock (&manager->priv->db_lock);
+
+    snprintf (sql, sizeof(sql),
+              "SELECT ca_id, head_id FROM CommonAncestor WHERE repo_id='%s';",
+              repo_id);
+    if (sqlite_foreach_selected_row (manager->priv->db, sql,
+                                     get_common_ancestor, info) < 0) {
+        pthread_mutex_unlock (&manager->priv->db_lock);
+        return -1;
+    }
+
+    pthread_mutex_unlock (&manager->priv->db_lock);
+
+    memcpy (common_ancestor, info->common_ancestor, 40);
+    memcpy (head_id, info->head_id, 40);
+
+    return 0;
+}
+
+int
+seaf_repo_manager_set_common_ancestor (SeafRepoManager *manager,
+                                       const char *repo_id,
+                                       const char *common_ancestor,
+                                       const char *head_id)
+{
+    char sql[256];
+
+    pthread_mutex_lock (&manager->priv->db_lock);
+
+    snprintf (sql, sizeof(sql),
+              "REPLACE INTO CommonAncestor VALUES ('%s', '%s', '%s');",
+              repo_id, common_ancestor, head_id);
+    int ret = sqlite_query_exec (manager->priv->db, sql);
+
+    pthread_mutex_unlock (&manager->priv->db_lock);
+    return ret;
 }
 
 GList*
